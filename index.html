@@ -45,39 +45,36 @@
         }
 
         .bar-bg {
-            width: 300px;
-            height: 6px;
-            background: #222;
-            border-radius: 10px;
-            margin-top: 20px;
-            overflow: hidden;
+            width: 300px; height: 6px;
+            background: #222; border-radius: 10px;
+            margin-top: 20px; overflow: hidden;
         }
 
         #bar-fill {
-            width: 0%;
-            height: 100%;
+            width: 0%; height: 100%;
             background: #ff4747;
             box-shadow: 0 0 15px rgba(255, 71, 71, 0.5);
             transition: width 0.2s linear;
         }
 
         #status-text {
-            color: #777;
-            font-size: 11px;
-            font-weight: 600;
-            letter-spacing: 4px;
-            text-transform: uppercase;
-            margin-top: 15px;
+            color: #777; font-size: 11px; font-weight: 600;
+            letter-spacing: 4px; text-transform: uppercase; margin-top: 15px;
         }
 
         #percent-text {
-            color: #fff;
-            font-size: 32px;
-            font-weight: 900;
+            color: #fff; font-size: 32px; font-weight: 900;
         }
     </style>
 
     <script>
+      // --- FIX: Unity Compatibility Layer ---
+      // This prevents "JS Error" crashes when the game calls external functions
+      window.UnityLoader = window.UnityLoader || {};
+      window.onUnityMessage = function(msg) { console.log("Unity Msg:", msg); };
+      window.Mute = function() { console.log("Mute called"); };
+      window.Unmute = function() { console.log("Unmute called"); };
+      
       window.fileMergerConfig = {
         files: [
           { name: 'burrito-bison-ll.data.unityweb', parts: 2 }, 
@@ -100,7 +97,7 @@
         const send = xhr.send;
         xhr.send = function() {
           for (const file of window.fileMergerConfig.files) {
-            if (this._url.includes(file.name) && window.mergedFiles[file.name]) {
+            if (this._url && this._url.includes(file.name) && window.mergedFiles[file.name]) {
               Object.defineProperty(this, 'status', { value: 200 });
               Object.defineProperty(this, 'readyState', { value: 4 });
               Object.defineProperty(this, 'response', { value: window.mergedFiles[file.name] });
@@ -109,7 +106,11 @@
               return;
             }
           }
-          return send.apply(this, arguments);
+          try {
+            return send.apply(this, arguments);
+          } catch(e) {
+            console.warn("Caught XHR error to prevent crash:", e);
+          }
         };
         return xhr;
       };
@@ -122,7 +123,11 @@
             return new Response(window.mergedFiles[file.name], { status: 200 });
           }
         }
-        return originalFetch.call(this, url, ...args);
+        // Handle potential Fetch errors gracefully (Save data errors)
+        return originalFetch.call(this, url, ...args).catch(err => {
+            console.warn("Blocked fetch error:", err);
+            return new Response("", {status: 404});
+        });
       };
 
       async function startLoading() {
@@ -132,28 +137,28 @@
         const overlay = document.getElementById('loader-overlay');
         
         let actualFinished = false;
-        const duration = 25000; // 25 SECONDS
+        const duration = 20000; // Reduced to 20s for better UX
         const startTime = Date.now();
 
-        // 1. Begin Background File Merging immediately
         const mergeTask = (async () => {
           const baseUrl = "https://cdn.jsdelivr.net/gh/bubbls/UGS-Assets@main/BurritoBison-main/";
-          for (const file of window.fileMergerConfig.files) {
-            const parts = [];
-            for (let i = 1; i <= file.parts; i++) {
-              const res = await originalFetch(baseUrl + file.name + ".part" + i);
-              parts.push(await res.arrayBuffer());
-            }
-            const totalSize = parts.reduce((a, b) => a + b.byteLength, 0);
-            const ui8 = new Uint8Array(totalSize);
-            let offset = 0;
-            for (const p of parts) { ui8.set(new Uint8Array(p), offset); offset += p.byteLength; }
-            window.mergedFiles[file.name] = ui8.buffer;
-          }
-          actualFinished = true;
+          try {
+              for (const file of window.fileMergerConfig.files) {
+                const parts = [];
+                for (let i = 1; i <= file.parts; i++) {
+                  const res = await originalFetch(baseUrl + file.name + ".part" + i);
+                  parts.push(await res.arrayBuffer());
+                }
+                const totalSize = parts.reduce((a, b) => a + b.byteLength, 0);
+                const ui8 = new Uint8Array(totalSize);
+                let offset = 0;
+                for (const p of parts) { ui8.set(new Uint8Array(p), offset); offset += p.byteLength; }
+                window.mergedFiles[file.name] = ui8.buffer;
+              }
+              actualFinished = true;
+          } catch(e) { console.error("Merge error:", e); }
         })();
 
-        // 2. Visual Progress Manager
         const progressInterval = setInterval(() => {
           const elapsed = Date.now() - startTime;
           const visualPercent = Math.min((elapsed / duration) * 100, 99);
@@ -162,13 +167,11 @@
           percentText.innerText = Math.floor(visualPercent) + "%";
           statusText.innerText = "Loading Content...";
 
-          // Trigger Unity initialization in the background at 10% progress
           if (visualPercent >= 10 && !window.unityInited && actualFinished) {
             window.unityInited = true;
             initUnity();
           }
 
-          // Complete sequence
           if (actualFinished && elapsed >= duration) {
             clearInterval(progressInterval);
             fill.style.width = '100%';
@@ -184,12 +187,15 @@
       }
 
       function initUnity() {
-        console.log("Unity starting in background...");
         const script = document.createElement('script');
         script.src = "https://cdn.jsdelivr.net/gh/bubbls/UGS-Assets@main/BurritoBison-main/burrito-bison-ll.js";
         script.onload = () => {
+          // Explicitly handle Module errors to keep game running
           window.gameInstance = UnityLoader.instantiate("gameContainer", "https://cdn.jsdelivr.net/gh/bubbls/UGS-Assets@main/BurritoBison-main/burrito-bison-ll.json", {
-            Module: { onRuntimeInitialized: function() { console.log("Unity background init complete."); } }
+            Module: { 
+                onRuntimeInitialized: function() { console.log("Unity init complete."); },
+                LogException: function(e) { console.warn("Unity internal exception caught:", e); }
+            }
           });
         };
         document.head.appendChild(script);
